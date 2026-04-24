@@ -222,10 +222,27 @@ def template_df():
     hoje = date.today()
     semana = int(pd.Timestamp(hoje).isocalendar().week)
     return pd.DataFrame([
-        {"Data": hoje.isoformat(), "Semana": semana, "Turno": "1º", "Processo": "GERAL", "S_Acidentes": 0, "Q_Reclamacoes": 0, "C_Perdas_Ton_pct": 0.0, "D_AtendPrazo_pct": 98.0, "P_Eficiencia_pct": 75.0, "Observacao": ""},
-        {"Data": hoje.isoformat(), "Semana": semana, "Turno": "2º", "Processo": "LITOGRAFIA", "S_Acidentes": 0, "Q_Reclamacoes": 0, "C_Perdas_Ton_pct": 0.0, "D_AtendPrazo_pct": 98.0, "P_Eficiencia_pct": 75.0, "Observacao": ""},
-        {"Data": hoje.isoformat(), "Semana": semana, "Turno": "3º", "Processo": "PRENSAS", "S_Acidentes": 0, "Q_Reclamacoes": 0, "C_Perdas_Ton_pct": 0.0, "D_AtendPrazo_pct": 98.0, "P_Eficiencia_pct": 75.0, "Observacao": ""},
+        {"Data": hoje, "Semana": semana, "Turno": "1º", "Processo": "GERAL", "S_Acidentes": 0, "Q_Reclamacoes": 0, "C_Perdas_Ton_pct": 0.0, "D_AtendPrazo_pct": 98.0, "P_Eficiencia_pct": 75.0, "Observacao": ""},
+        {"Data": hoje, "Semana": semana, "Turno": "2º", "Processo": "LITOGRAFIA", "S_Acidentes": 0, "Q_Reclamacoes": 0, "C_Perdas_Ton_pct": 0.0, "D_AtendPrazo_pct": 98.0, "P_Eficiencia_pct": 75.0, "Observacao": ""},
+        {"Data": hoje, "Semana": semana, "Turno": "3º", "Processo": "PRENSAS", "S_Acidentes": 0, "Q_Reclamacoes": 0, "C_Perdas_Ton_pct": 0.0, "D_AtendPrazo_pct": 98.0, "P_Eficiencia_pct": 75.0, "Observacao": ""},
     ])
+
+
+def prepare_editor_df(df):
+    colunas = ["Data", "Semana", "Turno", "Processo", "S_Acidentes", "Q_Reclamacoes", "C_Perdas_Ton_pct", "D_AtendPrazo_pct", "P_Eficiencia_pct", "Observacao"]
+    df = df.copy()
+    for col in colunas:
+        if col not in df.columns:
+            df[col] = None
+    df = df[colunas]
+    df["Data"] = pd.to_datetime(df["Data"], errors="coerce").dt.date
+    df["Semana"] = pd.to_numeric(df["Semana"], errors="coerce").fillna(0).astype(int)
+    for col in ["S_Acidentes", "Q_Reclamacoes", "C_Perdas_Ton_pct", "D_AtendPrazo_pct", "P_Eficiencia_pct"]:
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ".", regex=False), errors="coerce").fillna(0.0)
+    df["Turno"] = df["Turno"].fillna("1º").astype(str)
+    df["Processo"] = df["Processo"].fillna("GERAL").astype(str)
+    df["Observacao"] = df["Observacao"].fillna("").astype(str)
+    return df
 
 
 init_db()
@@ -291,6 +308,8 @@ with tab_lanc:
             base_edit = template_df()
     else:
         base_edit = template_df()
+
+    base_edit = prepare_editor_df(base_edit)
 
     edited = st.data_editor(
         base_edit,

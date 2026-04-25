@@ -1,502 +1,402 @@
-import os
 import sqlite3
+import unicodedata
 from datetime import date, datetime
+from pathlib import Path
 
 import pandas as pd
-import streamlit as st
 import plotly.graph_objects as go
+import streamlit as st
 
-# =========================================================
-# APP SQDCP - FMDS SIMPLIFICADO
-# Segurança | Qualidade | Custos | Delivery | Processo
-# =========================================================
+st.set_page_config(page_title="SQDCP | FMDS", page_icon="📊", layout="wide")
 
-st.set_page_config(
-    page_title="SQDCP FMDS - Unidade RS",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+DB_DIR = Path("data")
+DB_DIR.mkdir(exist_ok=True)
+DB_PATH = DB_DIR / "sqdcp_fmds.db"
 
-DB_PATH = os.path.join("data", "sqdcp_fmds.db")
-os.makedirs("data", exist_ok=True)
-
-AREAS = ["Prensas", "Litografia", "Montagem"]
-MESES = {
-    1: "Jan", 2: "Fev", 3: "Mar", 4: "Abr", 5: "Mai", 6: "Jun",
-    7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"
-}
-MESES_INV = {v: k for k, v in MESES.items()}
-TURNOS = ["1º", "2º", "3º"]
-
-# Metas padrão. Ajuste aqui conforme regra da unidade.
-METAS = {
-    "acidentes_max": 0,
-    "reclamacoes_max_mes": 8,
-    "perda_pct_max": 0.80,
-    "prazo_min": 98.0,
-    "eficiencia_min": 75.0,
-}
+MESES = [
+    "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+]
 
 CSS = """
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-#MainMenu, footer, header {visibility: hidden;}
-.titulo-sqdcp {font-size: 34px; font-weight: 800; color: #4b9b59; line-height: 1;}
-.subtitulo {font-size: 13px; color: #263238; font-weight: 700; margin-top: -6px;}
-.unidade {font-size: 30px; font-weight: 800; color: #1e2b2d; text-align: right;}
-.fmds-bar {border: 1px solid #e2e8e8; border-radius: 12px; padding: 10px 14px; background: #fff; margin-bottom: 10px;}
-.card {border: 3px solid #1e3336; border-radius: 36px; min-height: 570px; background: #ffffff; padding: 12px 14px 8px 14px;}
-.card-title {font-size: 36px; font-weight: 800; text-align: center; color: #273133; line-height: 1; margin-top: 4px;}
-.card-subtitle {font-size: 13px; font-weight: 700; text-align: center; color: #111; min-height: 34px; margin-bottom: 4px;}
-.status-ok {background: #57a85a; color: white; padding: 5px 12px; border-radius: 20px; font-size: 13px; font-weight: 800; display: inline-block;}
-.status-nok {background: #ff5b57; color: white; padding: 5px 12px; border-radius: 20px; font-size: 13px; font-weight: 800; display: inline-block;}
-.status-alerta {background: #f2b84b; color: #111; padding: 5px 12px; border-radius: 20px; font-size: 13px; font-weight: 800; display: inline-block;}
-.kpi-num {font-size: 26px; font-weight: 800; text-align: center; margin: 0px; color: #1f2933;}
-.kpi-label {font-size: 12px; text-align: center; color: #4b5563; margin-top: -6px;}
-.area-row {display: flex; justify-content: space-between; gap: 8px; margin: 6px 0px; align-items:center;}
-.area-name {font-size: 12px; font-weight: 700; width: 78px;}
-.area-value {font-size: 12px; font-weight: 800; min-width: 54px; text-align:right;}
-.small-note {font-size: 12px; color: #566; text-align: center;}
+.main-title {font-size: 2rem; font-weight: 800; color: #111827; margin-bottom: 0.2rem;}
+.subtitle {color: #4b5563; margin-bottom: 1.0rem;}
+.kpi-card {background: #ffffff; border: 1px solid #e5e7eb; border-radius: 18px; padding: 14px; box-shadow: 0 6px 18px rgba(15,23,42,.06);}
+.kpi-title {font-weight: 800; font-size: 1.0rem; color: #111827; text-align: center; margin-bottom: 0.2rem;}
+.kpi-unit {font-size: .82rem; color: #6b7280; text-align: center; margin-top: -0.4rem; margin-bottom: .2rem;}
+.section-title {font-size: 1.15rem; font-weight: 800; margin-top: 1.2rem; margin-bottom: .4rem;}
+.small-note {color:#6b7280; font-size: .85rem;}
+.stButton button {border-radius: 10px; font-weight: 700;}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
 
-def conectar():
+def norm_col(text):
+    text = str(text).strip().lower()
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = text.replace("%", "pct").replace("/", "_").replace("-", "_")
+    for ch in [" ", ".", "(", ")"]:
+        text = text.replace(ch, "_")
+    while "__" in text:
+        text = text.replace("__", "_")
+    return text.strip("_")
+
+COLUMN_ALIASES = {
+    "data": "data",
+    "dia": "data",
+    "mes": "mes",
+    "mês": "mes",
+    "semana": "semana",
+    "turno": "turno",
+    "acidente": "acidentes",
+    "acidentes": "acidentes",
+    "reclamacao": "reclamacoes",
+    "reclamacoes": "reclamacoes",
+    "reclamações": "reclamacoes",
+    "perda_prensas": "perda_prensas_ton",
+    "perda_prensas_ton": "perda_prensas_ton",
+    "perda_prensas_tonelada": "perda_prensas_ton",
+    "perda_litografia": "perda_litografia_ton",
+    "perda_litografia_ton": "perda_litografia_ton",
+    "perda_litografia_tonelada": "perda_litografia_ton",
+    "perda_montagem": "perda_montagem_ton",
+    "perda_montagem_ton": "perda_montagem_ton",
+    "perda_montagem_tonelada": "perda_montagem_ton",
+    "atendimento_no_prazo": "atendimento_prazo_pct",
+    "atendimento_prazo": "atendimento_prazo_pct",
+    "atendimento_prazo_pct": "atendimento_prazo_pct",
+    "eficiencia_prensas": "eficiencia_prensas_pct",
+    "eficiencia_prensas_pct": "eficiencia_prensas_pct",
+    "eficiencia_litografia": "eficiencia_litografia_pct",
+    "eficiencia_litografia_pct": "eficiencia_litografia_pct",
+    "eficiencia_montagem": "eficiencia_montagem_pct",
+    "eficiencia_montagem_pct": "eficiencia_montagem_pct",
+}
+
+DATA_COLS = [
+    "data", "mes", "semana", "turno", "acidentes", "reclamacoes",
+    "perda_prensas_ton", "perda_litografia_ton", "perda_montagem_ton",
+    "atendimento_prazo_pct", "eficiencia_prensas_pct", "eficiencia_litografia_pct", "eficiencia_montagem_pct"
+]
+
+NUMERIC_COLS = [
+    "semana", "acidentes", "reclamacoes", "perda_prensas_ton", "perda_litografia_ton", "perda_montagem_ton",
+    "atendimento_prazo_pct", "eficiencia_prensas_pct", "eficiencia_litografia_pct", "eficiencia_montagem_pct"
+]
+
+
+def connect():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def init_db():
-    con = conectar()
-    cur = con.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS lancamentos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            data TEXT NOT NULL,
-            mes INTEGER NOT NULL,
-            semana INTEGER NOT NULL,
-            turno TEXT NOT NULL,
-            area TEXT NOT NULL,
-            acidentes INTEGER DEFAULT 0,
-            reclamacoes INTEGER DEFAULT 0,
-            perda_ton REAL DEFAULT 0,
-            ton_processada REAL DEFAULT 0,
-            entregas_no_prazo INTEGER DEFAULT 0,
-            entregas_total INTEGER DEFAULT 0,
-            eficiencia_pct REAL DEFAULT 0,
-            observacao TEXT DEFAULT '',
-            criado_em TEXT DEFAULT CURRENT_TIMESTAMP
+    with connect() as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lancamentos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data TEXT,
+                mes TEXT,
+                semana INTEGER,
+                turno TEXT,
+                acidentes REAL DEFAULT 0,
+                reclamacoes REAL DEFAULT 0,
+                perda_prensas_ton REAL DEFAULT 0,
+                perda_litografia_ton REAL DEFAULT 0,
+                perda_montagem_ton REAL DEFAULT 0,
+                atendimento_prazo_pct REAL DEFAULT 0,
+                eficiencia_prensas_pct REAL DEFAULT 0,
+                eficiencia_litografia_pct REAL DEFAULT 0,
+                eficiencia_montagem_pct REAL DEFAULT 0,
+                criado_em TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         )
-        """
-    )
-    con.commit()
-    con.close()
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS acoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                indicador TEXT NOT NULL,
+                descricao TEXT,
+                responsavel TEXT,
+                prazo TEXT,
+                status TEXT DEFAULT 'Aberta',
+                criado_em TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
 
-def carregar_dados():
-    con = conectar()
-    df = pd.read_sql_query("SELECT * FROM lancamentos", con)
-    con.close()
-    if not df.empty:
-        for col in ["mes", "semana", "acidentes", "reclamacoes", "entregas_no_prazo", "entregas_total"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-        for col in ["perda_ton", "ton_processada", "eficiencia_pct"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-        df["data"] = pd.to_datetime(df["data"], errors="coerce")
-    return df
+def load_data():
+    with connect() as con:
+        return pd.read_sql_query("SELECT * FROM lancamentos ORDER BY data DESC, id DESC", con)
 
 
-def salvar_lancamentos(df_novo):
-    if df_novo.empty:
-        return 0
-    df = df_novo.copy()
-    df["data"] = pd.to_datetime(df["data"], errors="coerce")
-    df = df.dropna(subset=["data"])
-    df["mes"] = df["data"].dt.month.astype(int)
-    df["semana"] = pd.to_numeric(df["semana"], errors="coerce").fillna(1).astype(int)
-    df["turno"] = df["turno"].fillna("1º").astype(str)
-    df["area"] = df["area"].fillna("Prensas").astype(str)
-
-    colunas = [
-        "data", "mes", "semana", "turno", "area", "acidentes", "reclamacoes",
-        "perda_ton", "ton_processada", "entregas_no_prazo", "entregas_total",
-        "eficiencia_pct", "observacao"
-    ]
-    for c in colunas:
-        if c not in df.columns:
-            df[c] = 0 if c not in ["data", "turno", "area", "observacao"] else ""
-    for c in ["acidentes", "reclamacoes", "entregas_no_prazo", "entregas_total"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
-    for c in ["perda_ton", "ton_processada", "eficiencia_pct"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    df["data"] = df["data"].dt.strftime("%Y-%m-%d")
-    df = df[colunas]
-
-    con = conectar()
-    df.to_sql("lancamentos", con, if_exists="append", index=False)
-    con.close()
-    return len(df)
+def load_actions(indicador=None):
+    with connect() as con:
+        if indicador:
+            return pd.read_sql_query("SELECT id, descricao, responsavel, prazo, status FROM acoes WHERE indicador=? ORDER BY prazo, id DESC", con, params=(indicador,))
+        return pd.read_sql_query("SELECT * FROM acoes ORDER BY indicador, prazo", con)
 
 
-def excluir_tudo():
-    con = conectar()
-    con.execute("DELETE FROM lancamentos")
-    con.commit()
-    con.close()
+def insert_rows(df):
+    df = df.copy()
+    for col in DATA_COLS:
+        if col not in df.columns:
+            df[col] = 0 if col in NUMERIC_COLS else ""
+    df = df[DATA_COLS]
+    df["data"] = pd.to_datetime(df["data"], errors="coerce", dayfirst=True).dt.strftime("%Y-%m-%d")
+    df["data"] = df["data"].fillna(date.today().isoformat())
+    df["mes"] = df["mes"].replace("", pd.NA)
+    df["mes"] = df["mes"].fillna(pd.to_datetime(df["data"], errors="coerce").dt.month.map(lambda m: MESES[int(m)-1] if pd.notna(m) else ""))
+    for col in NUMERIC_COLS:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    for col in ["atendimento_prazo_pct", "eficiencia_prensas_pct", "eficiencia_litografia_pct", "eficiencia_montagem_pct"]:
+        df[col] = df[col].clip(0, 100)
+    with connect() as con:
+        df.to_sql("lancamentos", con, if_exists="append", index=False)
 
 
-def status_bool(valor, meta, sentido="max"):
-    if sentido == "max":
-        return valor <= meta
-    return valor >= meta
+def clear_database():
+    with connect() as con:
+        con.execute("DELETE FROM lancamentos")
+        con.execute("DELETE FROM acoes")
+        con.execute("DELETE FROM sqlite_sequence WHERE name IN ('lancamentos','acoes')")
 
 
-def status_html(ok, alerta=False):
-    if alerta:
-        return '<span class="status-alerta">ATENÇÃO</span>'
-    return '<span class="status-ok">OK</span>' if ok else '<span class="status-nok">FORA</span>'
+def normalize_import(df):
+    rename = {}
+    for col in df.columns:
+        key = norm_col(col)
+        rename[col] = COLUMN_ALIASES.get(key, key)
+    df = df.rename(columns=rename)
+    keep = [c for c in DATA_COLS if c in df.columns]
+    return df[keep].copy()
 
 
-def gauge(valor, meta, titulo, modo="max", sufixo="", altura=155):
-    if modo == "max":
-        cor = "#57a85a" if valor <= meta else "#ff5b57"
-        eixo_max = max(meta * 1.6, valor * 1.25, 1)
+def make_template():
+    return pd.DataFrame([{c: "" for c in DATA_COLS}])
+
+
+def gauge(title, value, max_value, suffix="", danger_high=False):
+    if pd.isna(value):
+        value = 0
+    if danger_high:
+        steps = [
+            {"range": [0, max_value * 0.33], "color": "#dcfce7"},
+            {"range": [max_value * 0.33, max_value * 0.66], "color": "#fef9c3"},
+            {"range": [max_value * 0.66, max_value], "color": "#fee2e2"},
+        ]
     else:
-        cor = "#57a85a" if valor >= meta else "#ff5b57"
-        eixo_max = 100 if valor <= 100 and meta <= 100 else max(valor * 1.2, meta * 1.2, 1)
+        steps = [
+            {"range": [0, max_value * 0.60], "color": "#fee2e2"},
+            {"range": [max_value * 0.60, max_value * 0.85], "color": "#fef9c3"},
+            {"range": [max_value * 0.85, max_value], "color": "#dcfce7"},
+        ]
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
-        value=float(valor),
-        number={"suffix": sufixo, "font": {"size": 24}},
-        title={"text": titulo, "font": {"size": 12}},
+        value=float(value),
+        number={"suffix": suffix, "font": {"size": 28}},
         gauge={
-            "axis": {"range": [0, eixo_max], "tickwidth": 0, "tickfont": {"size": 9}},
-            "bar": {"color": cor, "thickness": 0.38},
-            "bgcolor": "#eeeeee",
-            "borderwidth": 0,
-            "threshold": {"line": {"color": "#263238", "width": 3}, "thickness": 0.75, "value": meta},
-        }
+            "axis": {"range": [0, max_value], "tickwidth": 1},
+            "bar": {"color": "#1f2937"},
+            "bgcolor": "white",
+            "borderwidth": 1,
+            "bordercolor": "#e5e7eb",
+            "steps": steps,
+        },
+        title={"text": title, "font": {"size": 16}},
     ))
-    fig.update_layout(height=altura, margin=dict(l=5, r=5, t=24, b=0), paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_layout(height=230, margin=dict(l=8, r=8, t=44, b=8), paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
 
-def barras_serie(df, coluna, titulo, meta=None, modo="max", sufixo=""):
+def filtered_data(df, mes, semana):
+    out = df.copy()
+    if mes != "Todos":
+        out = out[out["mes"] == mes]
+    if semana != "Todas":
+        out = out[out["semana"] == int(semana)]
+    return out
+
+
+def calc_indicators(df):
     if df.empty:
-        serie = pd.DataFrame({"dia": [], coluna: []})
-    else:
-        tmp = df.copy()
-        tmp["dia"] = pd.to_datetime(tmp["data"], errors="coerce").dt.day
-        serie = tmp.groupby("dia", as_index=False)[coluna].sum()
-    cores = []
-    for v in serie[coluna].tolist():
-        if meta is None:
-            cores.append("#ff5b57")
-        elif modo == "max":
-            cores.append("#57a85a" if v <= meta else "#ff5b57")
-        else:
-            cores.append("#57a85a" if v >= meta else "#ff5b57")
-    fig = go.Figure()
-    fig.add_bar(x=serie["dia"], y=serie[coluna], marker_color=cores, text=serie[coluna], textposition="outside")
-    if meta is not None:
-        fig.add_hline(y=meta, line_dash="dot", line_color="#9aa0a6")
-    fig.update_layout(
-        title={"text": titulo, "font": {"size": 12}}, height=170,
-        margin=dict(l=4, r=4, t=28, b=4), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(title="", showgrid=False, tickfont=dict(size=9)),
-        yaxis=dict(title="", showgrid=False, visible=False),
-        showlegend=False,
-    )
-    return fig
-
-
-def barras_area(valores, meta, titulo, modo="max", sufixo=""):
-    xs = list(valores.keys())
-    ys = [valores[a] for a in xs]
-    cores = [("#57a85a" if (v <= meta if modo == "max" else v >= meta) else "#ff5b57") for v in ys]
-    textos = [f"{v:.2f}{sufixo}" if isinstance(v, float) else f"{v}{sufixo}" for v in ys]
-    fig = go.Figure()
-    fig.add_bar(x=xs, y=ys, marker_color=cores, text=textos, textposition="outside")
-    fig.add_hline(y=meta, line_dash="dot", line_color="#9aa0a6")
-    fig.update_layout(
-        title={"text": titulo, "font": {"size": 12}}, height=185,
-        margin=dict(l=4, r=4, t=28, b=4), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(title="", showgrid=False, tickfont=dict(size=9)),
-        yaxis=dict(title="", showgrid=False, visible=False),
-        showlegend=False,
-    )
-    return fig
-
-
-def calcular_indicadores(df):
-    total_acidentes = int(df["acidentes"].sum()) if not df.empty else 0
-    total_reclamacoes = int(df["reclamacoes"].sum()) if not df.empty else 0
-    perda_ton = float(df["perda_ton"].sum()) if not df.empty else 0.0
-    ton = float(df["ton_processada"].sum()) if not df.empty else 0.0
-    perda_pct = (perda_ton / ton * 100) if ton > 0 else 0.0
-    entregas_ok = int(df["entregas_no_prazo"].sum()) if not df.empty else 0
-    entregas_total = int(df["entregas_total"].sum()) if not df.empty else 0
-    prazo_pct = (entregas_ok / entregas_total * 100) if entregas_total > 0 else 100.0
-
-    perdas_area = {}
-    efic_area = {}
-    for area in AREAS:
-        dfa = df[df["area"] == area] if not df.empty else pd.DataFrame()
-        perda = float(dfa["perda_ton"].sum()) if not dfa.empty else 0.0
-        ton_area = float(dfa["ton_processada"].sum()) if not dfa.empty else 0.0
-        perdas_area[area] = (perda / ton_area * 100) if ton_area > 0 else 0.0
-        # média ponderada simples pela tonelada processada; se não houver tonelada, média aritmética dos registros.
-        if not dfa.empty and ton_area > 0:
-            efic_area[area] = float((dfa["eficiencia_pct"] * dfa["ton_processada"]).sum() / ton_area)
-        elif not dfa.empty:
-            efic_area[area] = float(dfa["eficiencia_pct"].mean())
-        else:
-            efic_area[area] = 0.0
-    eficiencia_geral = sum(efic_area.values()) / len(AREAS) if AREAS else 0.0
-
+        return {
+            "acidentes": 0, "reclamacoes": 0, "perda_total": 0,
+            "atendimento": 0, "eficiencia": 0,
+            "perdas_area": {"Prensas": 0, "Litografia": 0, "Montagem": 0},
+            "ef_area": {"Prensas": 0, "Litografia": 0, "Montagem": 0},
+        }
     return {
-        "acidentes": total_acidentes,
-        "reclamacoes": total_reclamacoes,
-        "perda_pct": perda_pct,
-        "prazo_pct": prazo_pct,
-        "eficiencia_geral": eficiencia_geral,
-        "perdas_area": perdas_area,
-        "efic_area": efic_area,
-        "perda_ton": perda_ton,
-        "ton": ton,
-        "entregas_ok": entregas_ok,
-        "entregas_total": entregas_total,
+        "acidentes": df["acidentes"].sum(),
+        "reclamacoes": df["reclamacoes"].sum(),
+        "perda_total": df[["perda_prensas_ton", "perda_litografia_ton", "perda_montagem_ton"]].sum().sum(),
+        "atendimento": df["atendimento_prazo_pct"].mean(),
+        "eficiencia": df[["eficiencia_prensas_pct", "eficiencia_litografia_pct", "eficiencia_montagem_pct"]].mean().mean(),
+        "perdas_area": {
+            "Prensas": df["perda_prensas_ton"].sum(),
+            "Litografia": df["perda_litografia_ton"].sum(),
+            "Montagem": df["perda_montagem_ton"].sum(),
+        },
+        "ef_area": {
+            "Prensas": df["eficiencia_prensas_pct"].mean(),
+            "Litografia": df["eficiencia_litografia_pct"].mean(),
+            "Montagem": df["eficiencia_montagem_pct"].mean(),
+        },
     }
 
 
-def cabecalho():
-    c1, c2 = st.columns([1.2, 1])
-    with c1:
-        st.markdown('<div class="titulo-sqdcp">SQDCP</div>', unsafe_allow_html=True)
-        st.markdown('<div class="subtitulo">Segurança | Qualidade | Custos | Delivery | Processo</div>', unsafe_allow_html=True)
-    with c2:
-        st.markdown('<div class="unidade">UNIDADE RS</div>', unsafe_allow_html=True)
+def actions_editor(indicador):
+    st.markdown(f"<div class='small-note'>Ações — {indicador}</div>", unsafe_allow_html=True)
+    existing = load_actions(indicador)
+    display = existing[["descricao", "responsavel", "prazo", "status"]].copy() if not existing.empty else pd.DataFrame(columns=["descricao", "responsavel", "prazo", "status"])
+    edited = st.data_editor(
+        display,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        key=f"acoes_{indicador}",
+        column_config={
+            "descricao": st.column_config.TextColumn("Descrição", width="large"),
+            "responsavel": st.column_config.TextColumn("Responsável"),
+            "prazo": st.column_config.DateColumn("Prazo", format="DD/MM/YYYY"),
+            "status": st.column_config.SelectboxColumn("Status", options=["Aberta", "Em andamento", "Concluída"]),
+        },
+    )
+    if st.button("Salvar ações", key=f"salvar_{indicador}"):
+        with connect() as con:
+            con.execute("DELETE FROM acoes WHERE indicador=?", (indicador,))
+            for _, row in edited.dropna(how="all").iterrows():
+                if str(row.get("descricao", "")).strip() or str(row.get("responsavel", "")).strip():
+                    prazo = row.get("prazo", "")
+                    if pd.notna(prazo) and prazo != "":
+                        prazo = pd.to_datetime(prazo).date().isoformat()
+                    else:
+                        prazo = ""
+                    con.execute(
+                        "INSERT INTO acoes (indicador, descricao, responsavel, prazo, status) VALUES (?, ?, ?, ?, ?)",
+                        (indicador, row.get("descricao", ""), row.get("responsavel", ""), prazo, row.get("status", "Aberta")),
+                    )
+        st.success("Ações salvas.")
 
 
-def filtro_mes_semana(df):
-    ano_atual = date.today().year
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 5])
-    anos_disponiveis = sorted(pd.to_datetime(df["data"], errors="coerce").dt.year.dropna().unique().astype(int).tolist()) if not df.empty else [ano_atual]
-    if ano_atual not in anos_disponiveis:
-        anos_disponiveis.append(ano_atual)
-        anos_disponiveis = sorted(anos_disponiveis)
-    with col1:
-        ano = st.selectbox("Ano", anos_disponiveis, index=len(anos_disponiveis)-1)
-    with col2:
-        mes_nome = st.selectbox("Mês", list(MESES.values()), index=date.today().month-1)
-    with col3:
-        semana = st.selectbox("Semana", ["Todas"] + list(range(1, 7)), index=0)
-    with col4:
-        st.markdown('<div class="fmds-bar"><b>FMDS:</b> foco em gestão visual, desvio destacado por cor e ação rápida na rotina diária.</div>', unsafe_allow_html=True)
-    mes = MESES_INV[mes_nome]
-    dff = df[(pd.to_datetime(df["data"], errors="coerce").dt.year == ano) & (df["mes"] == mes)] if not df.empty else df
-    if semana != "Todas" and not dff.empty:
-        dff = dff[dff["semana"] == int(semana)]
-    return ano, mes, mes_nome, semana, dff
+init_db()
 
+st.markdown("<div class='main-title'>Painel SQDCP / FMDS</div>", unsafe_allow_html=True)
+st.markdown("<div class='subtitle'>Gestão visual simples: indicador, desvio e ação no mesmo painel.</div>", unsafe_allow_html=True)
 
-def card_segurança(df, ind):
-    ok = status_bool(ind["acidentes"], METAS["acidentes_max"], "max")
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">S</div><div class="card-subtitle">Acidentes</div>', unsafe_allow_html=True)
-    st.plotly_chart(gauge(ind["acidentes"], METAS["acidentes_max"], "Meta: zero acidente", "max", ""), use_container_width=True, config={"displayModeBar": False})
-    st.markdown(f'<p class="kpi-num">{ind["acidentes"]}</p><p class="kpi-label">acidentes no período</p><div style="text-align:center">{status_html(ok)}</div>', unsafe_allow_html=True)
-    st.plotly_chart(barras_serie(df, "acidentes", "Evolução diária", meta=0, modo="max"), use_container_width=True, config={"displayModeBar": False})
-    st.markdown('<p class="small-note">Regra FMDS: acidente gera desvio vermelho e tratativa imediata.</p>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+with st.sidebar:
+    st.header("Filtros")
+    data_all = load_data()
+    meses_disponiveis = [m for m in MESES if not data_all.empty and m in data_all["mes"].dropna().unique().tolist()]
+    mes = st.selectbox("Mês", ["Todos"] + meses_disponiveis if meses_disponiveis else ["Todos"] + MESES)
+    semanas = sorted([int(x) for x in data_all["semana"].dropna().unique().tolist()]) if not data_all.empty else list(range(1, 7))
+    semana = st.selectbox("Semana", ["Todas"] + semanas)
+    st.divider()
+    st.header("Importar Excel")
+    template = make_template()
+    st.download_button(
+        "Baixar modelo Excel",
+        data=template.to_excel(index=False, engine="openpyxl"),
+        file_name="modelo_importacao_sqdcp.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    uploaded = st.file_uploader("Selecionar arquivo .xlsx", type=["xlsx"])
+    if uploaded is not None:
+        try:
+            imp = pd.read_excel(uploaded)
+            imp = normalize_import(imp)
+            st.caption(f"Linhas identificadas: {len(imp)}")
+            st.dataframe(imp.head(10), use_container_width=True, hide_index=True)
+            if st.button("Importar para a base"):
+                insert_rows(imp)
+                st.success("Dados importados com sucesso.")
+                st.rerun()
+        except Exception as e:
+            st.error(f"Não foi possível importar o arquivo: {e}")
+    st.divider()
+    st.header("Base de dados")
+    st.caption("Exclusão sem senha. Marque a confirmação antes de apagar.")
+    confirmar = st.checkbox("Confirmo que desejo excluir toda a base")
+    if st.button("Excluir toda a base", type="primary", disabled=not confirmar):
+        clear_database()
+        st.success("Base excluída.")
+        st.rerun()
 
-
-def card_qualidade(df, ind):
-    ok = status_bool(ind["reclamacoes"], METAS["reclamacoes_max_mes"], "max")
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">Q</div><div class="card-subtitle">Reclamações de Clientes</div>', unsafe_allow_html=True)
-    st.plotly_chart(gauge(ind["reclamacoes"], METAS["reclamacoes_max_mes"], "Meta mensal", "max", ""), use_container_width=True, config={"displayModeBar": False})
-    st.markdown(f'<p class="kpi-num">{ind["reclamacoes"]}</p><p class="kpi-label">reclamações no período</p><div style="text-align:center">{status_html(ok)}</div>', unsafe_allow_html=True)
-    st.plotly_chart(barras_serie(df, "reclamacoes", "Evolução diária", meta=METAS["reclamacoes_max_mes"] / 4, modo="max"), use_container_width=True, config={"displayModeBar": False})
-    st.markdown('<p class="small-note">Acompanhar tendência e priorizar maiores desvios de qualidade.</p>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def card_custos(df, ind):
-    ok = status_bool(ind["perda_pct"], METAS["perda_pct_max"], "max")
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">C</div><div class="card-subtitle">Perdas / Ton Processada</div>', unsafe_allow_html=True)
-    st.plotly_chart(gauge(ind["perda_pct"], METAS["perda_pct_max"], "Perda total", "max", "%"), use_container_width=True, config={"displayModeBar": False})
-    st.markdown(f'<p class="kpi-num">{ind["perda_pct"]:.2f}%</p><p class="kpi-label">{ind["perda_ton"]:.2f} ton perdidas / {ind["ton"]:.2f} ton processadas</p><div style="text-align:center">{status_html(ok)}</div>', unsafe_allow_html=True)
-    st.plotly_chart(barras_area(ind["perdas_area"], METAS["perda_pct_max"], "Perdas por área", "max", "%"), use_container_width=True, config={"displayModeBar": False})
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def card_delivery(df, ind):
-    ok = status_bool(ind["prazo_pct"], METAS["prazo_min"], "min")
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">D</div><div class="card-subtitle">Atendimento no Prazo</div>', unsafe_allow_html=True)
-    st.plotly_chart(gauge(ind["prazo_pct"], METAS["prazo_min"], "Meta mínima", "min", "%"), use_container_width=True, config={"displayModeBar": False})
-    st.markdown(f'<p class="kpi-num">{ind["prazo_pct"]:.1f}%</p><p class="kpi-label">{ind["entregas_ok"]} no prazo / {ind["entregas_total"]} entregas</p><div style="text-align:center">{status_html(ok)}</div>', unsafe_allow_html=True)
-    # Calcula % diário para gráfico
-    if df.empty:
-        dfd = pd.DataFrame(columns=["data", "prazo_pct_dia"])
-    else:
-        dfd = df.copy()
-        dfd["dia"] = pd.to_datetime(dfd["data"], errors="coerce").dt.day
-        dfd = dfd.groupby("dia", as_index=False).agg({"entregas_no_prazo": "sum", "entregas_total": "sum"})
-        dfd["prazo_pct_dia"] = dfd.apply(lambda r: (r["entregas_no_prazo"] / r["entregas_total"] * 100) if r["entregas_total"] else 100, axis=1)
-    fig = go.Figure()
-    cores = ["#57a85a" if v >= METAS["prazo_min"] else "#ff5b57" for v in dfd.get("prazo_pct_dia", pd.Series(dtype=float)).tolist()]
-    fig.add_bar(x=dfd.get("dia", []), y=dfd.get("prazo_pct_dia", []), marker_color=cores, text=[f"{v:.0f}%" for v in dfd.get("prazo_pct_dia", [])], textposition="outside")
-    fig.add_hline(y=METAS["prazo_min"], line_dash="dot", line_color="#9aa0a6")
-    fig.update_layout(title={"text": "Evolução diária", "font": {"size": 12}}, height=170, margin=dict(l=4, r=4, t=28, b=4), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(visible=False), xaxis=dict(showgrid=False), showlegend=False)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def card_processo(df, ind):
-    ok = status_bool(ind["eficiencia_geral"], METAS["eficiencia_min"], "min")
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">P</div><div class="card-subtitle">Eficiência por Área</div>', unsafe_allow_html=True)
-    st.plotly_chart(gauge(ind["eficiencia_geral"], METAS["eficiencia_min"], "Eficiência média", "min", "%"), use_container_width=True, config={"displayModeBar": False})
-    st.markdown(f'<p class="kpi-num">{ind["eficiencia_geral"]:.1f}%</p><p class="kpi-label">média das áreas produtivas</p><div style="text-align:center">{status_html(ok)}</div>', unsafe_allow_html=True)
-    st.plotly_chart(barras_area(ind["efic_area"], METAS["eficiencia_min"], "Eficiência: Prensas, Litografia e Montagem", "min", "%"), use_container_width=True, config={"displayModeBar": False})
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def dashboard(df_filtrado):
-    ind = calcular_indicadores(df_filtrado)
-    cols = st.columns(5)
-    with cols[0]: card_segurança(df_filtrado, ind)
-    with cols[1]: card_qualidade(df_filtrado, ind)
-    with cols[2]: card_custos(df_filtrado, ind)
-    with cols[3]: card_delivery(df_filtrado, ind)
-    with cols[4]: card_processo(df_filtrado, ind)
-
-
-def tela_lancamentos():
-    st.subheader("Lançamento em massa")
-    st.caption("Preencha várias linhas e salve de uma única vez. O mês é calculado automaticamente pela data.")
-    hoje = date.today()
+with st.expander("Lançamento em massa manual", expanded=False):
     base = pd.DataFrame([
         {
-            "data": hoje,
-            "semana": 1,
-            "turno": "1º",
-            "area": "Prensas",
-            "acidentes": 0,
-            "reclamacoes": 0,
-            "perda_ton": 0.0,
-            "ton_processada": 0.0,
-            "entregas_no_prazo": 0,
-            "entregas_total": 0,
-            "eficiencia_pct": 0.0,
-            "observacao": "",
+            "data": date.today(), "mes": MESES[date.today().month - 1], "semana": 1, "turno": "1º",
+            "acidentes": 0, "reclamacoes": 0, "perda_prensas_ton": 0.0, "perda_litografia_ton": 0.0, "perda_montagem_ton": 0.0,
+            "atendimento_prazo_pct": 100, "eficiencia_prensas_pct": 0, "eficiencia_litografia_pct": 0, "eficiencia_montagem_pct": 0,
         }
     ])
-
     edited = st.data_editor(
         base,
         num_rows="dynamic",
         use_container_width=True,
         hide_index=True,
         column_config={
-            "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY", required=True),
+            "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+            "mes": st.column_config.SelectboxColumn("Mês", options=MESES),
             "semana": st.column_config.NumberColumn("Semana", min_value=1, max_value=6, step=1),
-            "turno": st.column_config.SelectboxColumn("Turno", options=TURNOS, required=True),
-            "area": st.column_config.SelectboxColumn("Área", options=AREAS, required=True),
+            "turno": st.column_config.SelectboxColumn("Turno", options=["1º", "2º", "3º"]),
             "acidentes": st.column_config.NumberColumn("Acidentes", min_value=0, step=1),
             "reclamacoes": st.column_config.NumberColumn("Reclamações", min_value=0, step=1),
-            "perda_ton": st.column_config.NumberColumn("Perda ton", min_value=0.0, step=0.01, format="%.2f"),
-            "ton_processada": st.column_config.NumberColumn("Ton processada", min_value=0.0, step=0.01, format="%.2f"),
-            "entregas_no_prazo": st.column_config.NumberColumn("Entregas no prazo", min_value=0, step=1),
-            "entregas_total": st.column_config.NumberColumn("Entregas total", min_value=0, step=1),
-            "eficiencia_pct": st.column_config.NumberColumn("Eficiência %", min_value=0.0, max_value=150.0, step=0.1, format="%.1f"),
-            "observacao": st.column_config.TextColumn("Observação"),
+            "perda_prensas_ton": st.column_config.NumberColumn("Perda Prensas t", min_value=0.0, step=0.01, format="%.3f"),
+            "perda_litografia_ton": st.column_config.NumberColumn("Perda Litografia t", min_value=0.0, step=0.01, format="%.3f"),
+            "perda_montagem_ton": st.column_config.NumberColumn("Perda Montagem t", min_value=0.0, step=0.01, format="%.3f"),
+            "atendimento_prazo_pct": st.column_config.NumberColumn("Atend. prazo %", min_value=0, max_value=100, step=1),
+            "eficiencia_prensas_pct": st.column_config.NumberColumn("Ef. Prensas %", min_value=0, max_value=100, step=1),
+            "eficiencia_litografia_pct": st.column_config.NumberColumn("Ef. Litografia %", min_value=0, max_value=100, step=1),
+            "eficiencia_montagem_pct": st.column_config.NumberColumn("Ef. Montagem %", min_value=0, max_value=100, step=1),
         },
-        key="editor_lancamento_massivo",
     )
+    if st.button("Salvar lançamentos"):
+        insert_rows(edited)
+        st.success("Lançamentos salvos.")
+        st.rerun()
 
-    c1, c2 = st.columns([1, 4])
-    with c1:
-        if st.button("Salvar lançamentos", type="primary", use_container_width=True):
-            qtd = salvar_lancamentos(edited)
-            st.success(f"{qtd} lançamento(s) salvo(s).")
-            st.cache_data.clear()
-            st.rerun()
-    with c2:
-        modelo = base.copy()
-        modelo["data"] = pd.to_datetime(modelo["data"]).dt.strftime("%d/%m/%Y")
-        st.download_button(
-            "Baixar modelo CSV",
-            data=modelo.to_csv(index=False, sep=";", decimal=","),
-            file_name="modelo_lancamento_sqdcp.csv",
-            mime="text/csv",
-            use_container_width=False,
-        )
+df = load_data()
+dff = filtered_data(df, mes, semana) if not df.empty else df
+ind = calc_indicators(dff)
 
-    st.divider()
-    st.subheader("Importação por CSV")
-    arq = st.file_uploader("Importar arquivo CSV no padrão do modelo", type=["csv"])
-    if arq is not None:
-        try:
-            df_imp = pd.read_csv(arq, sep=None, engine="python")
-            # Normalização de nomes usuais
-            df_imp.columns = [str(c).strip() for c in df_imp.columns]
-            if "data" not in df_imp.columns and "Data" in df_imp.columns:
-                df_imp = df_imp.rename(columns={"Data": "data"})
-            if st.button("Confirmar importação CSV", type="primary"):
-                qtd = salvar_lancamentos(df_imp)
-                st.success(f"{qtd} linha(s) importada(s).")
-                st.cache_data.clear()
-                st.rerun()
-            st.dataframe(df_imp.head(50), use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.error(f"Não foi possível ler o CSV: {e}")
+st.markdown("<div class='section-title'>Indicadores principais</div>", unsafe_allow_html=True)
+cols = st.columns(5)
+max_acidentes = max(5, ind["acidentes"] * 1.2)
+max_reclamacoes = max(10, ind["reclamacoes"] * 1.2)
+max_perda = max(1, ind["perda_total"] * 1.2)
+with cols[0]:
+    st.plotly_chart(gauge("Acidentes", ind["acidentes"], max_acidentes, " un", True), use_container_width=True)
+with cols[1]:
+    st.plotly_chart(gauge("Reclamações", ind["reclamacoes"], max_reclamacoes, " un", True), use_container_width=True)
+with cols[2]:
+    st.plotly_chart(gauge("Perda", ind["perda_total"], max_perda, " t", True), use_container_width=True)
+with cols[3]:
+    st.plotly_chart(gauge("Atend. Prazo", ind["atendimento"], 100, "%", False), use_container_width=True)
+with cols[4]:
+    st.plotly_chart(gauge("Eficiência", ind["eficiencia"], 100, "%", False), use_container_width=True)
 
+st.markdown("<div class='section-title'>Ações por indicador</div>", unsafe_allow_html=True)
+tabs = st.tabs(["Acidentes", "Reclamações", "Perda", "Atendimento no Prazo", "Eficiência"])
+for tab, indicador in zip(tabs, ["Acidentes", "Reclamações", "Perda", "Atendimento no Prazo", "Eficiência"]):
+    with tab:
+        actions_editor(indicador)
 
-def tela_base(df):
-    st.subheader("Base consolidada")
-    st.caption("Visão consolidada, sem consulta individual. Use apenas para conferência da massa de dados lançada.")
-    if df.empty:
-        st.info("Ainda não existem lançamentos salvos.")
-    else:
-        vis = df.copy()
-        vis["data"] = pd.to_datetime(vis["data"], errors="coerce").dt.strftime("%d/%m/%Y")
-        st.dataframe(vis.drop(columns=["id", "criado_em"], errors="ignore"), use_container_width=True, hide_index=True)
-        st.download_button("Exportar base CSV", vis.to_csv(index=False, sep=";", decimal=","), "base_sqdcp.csv", "text/csv")
+st.markdown("<div class='section-title'>Detalhamento por área</div>", unsafe_allow_html=True)
+c1, c2 = st.columns(2)
+with c1:
+    perda_area = pd.DataFrame({"Área": list(ind["perdas_area"].keys()), "Perda t": list(ind["perdas_area"].values())})
+    st.bar_chart(perda_area.set_index("Área"), use_container_width=True)
+with c2:
+    ef_area = pd.DataFrame({"Área": list(ind["ef_area"].keys()), "Eficiência %": list(ind["ef_area"].values())}).fillna(0)
+    st.bar_chart(ef_area.set_index("Área"), use_container_width=True)
 
-    with st.expander("Área administrativa - limpar base"):
-        senha = st.text_input("Senha", type="password")
-        if st.button("Excluir todos os lançamentos", type="secondary"):
-            if senha == "QualidadeRS":
-                excluir_tudo()
-                st.success("Base excluída.")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error("Senha incorreta.")
-
-
-def main():
-    init_db()
-    df = carregar_dados()
-    cabecalho()
-    ano, mes, mes_nome, semana, df_filtrado = filtro_mes_semana(df)
-
-    aba1, aba2, aba3 = st.tabs(["Painel FMDS", "Lançamentos em massa", "Base consolidada"])
-    with aba1:
-        if df.empty:
-            st.info("Inclua os primeiros dados na aba 'Lançamentos em massa'.")
-        dashboard(df_filtrado)
-    with aba2:
-        tela_lancamentos()
-    with aba3:
-        tela_base(df)
-
-
-if __name__ == "__main__":
-    main()
+with st.expander("Ver base filtrada", expanded=False):
+    st.dataframe(dff, use_container_width=True, hide_index=True)
+    csv = dff.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("Baixar base filtrada em CSV", csv, "base_sqdcp_filtrada.csv", "text/csv")

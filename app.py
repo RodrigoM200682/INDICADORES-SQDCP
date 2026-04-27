@@ -35,7 +35,6 @@ INDICADORES = [
 
 COLS_DADOS = [
     "data",
-    "semana",
     "acidentes_un",
     "reclamacoes_un",
     "perda_prensas_t",
@@ -155,14 +154,14 @@ def empty_metas() -> pd.DataFrame:
 
 def normalize_dados(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    # Compatibilidade: bases antigas podem conter a coluna "semana"; ela é ignorada nesta versão.
     for col in COLS_DADOS:
         if col not in df.columns:
             df[col] = 0 if col != "data" else pd.NaT
     df = df[COLS_DADOS]
     df["data"] = pd.to_datetime(df["data"], errors="coerce", dayfirst=True)
     df = df.dropna(subset=["data"])
-    df["semana"] = pd.to_numeric(df["semana"], errors="coerce").fillna(df["data"].dt.isocalendar().week).astype(int)
-    numeric_cols = [c for c in COLS_DADOS if c not in ["data", "semana"]]
+    numeric_cols = [c for c in COLS_DADOS if c != "data"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     return df
@@ -268,22 +267,12 @@ def month_name(n: int) -> str:
 
 
 def gauge_status_color(value: float, meta: float, tipo: str) -> str:
-    """Retorna a cor principal do relógio conforme a meta cadastrada."""
+    """Cor do marcador do relógio: verde quando atende a meta, vermelho quando não atende."""
     value = float(value or 0)
     meta = float(meta or 0)
     if tipo == "menor_melhor":
-        if value <= meta:
-            return "#2ca02c"
-        if (meta > 0 and value <= meta * 1.2) or (meta <= 0 and value <= 1):
-            return "#ffbf00"
-        return "#d62728"
-    if meta <= 0:
-        return "#2ca02c" if value > 0 else "#d62728"
-    if value >= meta:
-        return "#2ca02c"
-    if value >= meta * 0.9:
-        return "#ffbf00"
-    return "#d62728"
+        return "#2ca02c" if value <= meta else "#d62728"
+    return "#2ca02c" if value >= meta else "#d62728"
 
 
 def gauge(title: str, value: float, unit: str, min_value: float, max_value: float, meta: float, tipo: str) -> go.Figure:
@@ -293,23 +282,9 @@ def gauge(title: str, value: float, unit: str, min_value: float, max_value: floa
     if max_value <= min_value:
         max_value = min_value + 1
 
-    if tipo == "menor_melhor":
-        limite_verde = max(min_value, min(max_value, meta))
-        limite_amarelo = meta * 1.2 if meta > 0 else min(max_value, 1)
-        limite_amarelo = min(max_value, max(limite_verde, limite_amarelo))
-        steps = [
-            {"range": [min_value, limite_verde], "color": "#2ca02c"},
-            {"range": [limite_verde, limite_amarelo], "color": "#ffbf00"},
-            {"range": [limite_amarelo, max_value], "color": "#d62728"},
-        ]
-    else:
-        limite_vermelho = max(min_value, min(max_value, meta * 0.9))
-        limite_meta = min(max_value, max(limite_vermelho, meta))
-        steps = [
-            {"range": [min_value, limite_vermelho], "color": "#d62728"},
-            {"range": [limite_vermelho, limite_meta], "color": "#ffbf00"},
-            {"range": [limite_meta, max_value], "color": "#2ca02c"},
-        ]
+    steps = [
+        {"range": [min_value, max_value], "color": "#f2f2f2"},
+    ]
 
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
@@ -343,7 +318,6 @@ def status_sinaleira(status: str) -> str:
 def build_template() -> bytes:
     modelo_dados = pd.DataFrame([{
         "data": date.today(),
-        "semana": int(date.today().isocalendar().week),
         "acidentes_un": 0,
         "reclamacoes_un": 0,
         "perda_prensas_t": 0.0,
@@ -386,13 +360,11 @@ with st.sidebar:
     dados_base = normalize_dados(st.session_state["dados"])
     if dados_base.empty:
         meses_disp = list(range(1, 13))
-        semanas_disp = list(range(1, 54))
     else:
         meses_disp = sorted(dados_base["data"].dt.month.dropna().unique().astype(int).tolist())
-        semanas_disp = sorted(dados_base["semana"].dropna().unique().astype(int).tolist())
+        if not meses_disp:
+            meses_disp = list(range(1, 13))
     mes_sel = st.selectbox("Mês", meses_disp, format_func=month_name)
-    semana_opcoes = ["Todas"] + semanas_disp
-    semana_sel = st.selectbox("Semana", semana_opcoes)
 
     st.divider()
     st.header("Base")
@@ -472,7 +444,6 @@ with st.expander("Lançamento em massa", expanded=False):
     if base_edit.empty:
         base_edit = pd.DataFrame([{
             "data": pd.to_datetime(date.today()),
-            "semana": int(date.today().isocalendar().week),
             "acidentes_un": 0,
             "reclamacoes_un": 0,
             "perda_prensas_t": 0.0,
@@ -490,7 +461,6 @@ with st.expander("Lançamento em massa", expanded=False):
         hide_index=True,
         column_config={
             "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-            "semana": st.column_config.NumberColumn("Semana", min_value=1, max_value=53, step=1),
             "acidentes_un": st.column_config.NumberColumn("Acidentes", min_value=0, step=1),
             "reclamacoes_un": st.column_config.NumberColumn("Reclamações", min_value=0, step=1),
             "perda_prensas_t": st.column_config.NumberColumn("Perda Prensas t", min_value=0.0, step=0.01),
@@ -515,8 +485,6 @@ with st.expander("Lançamento em massa", expanded=False):
 filtro = normalize_dados(st.session_state["dados"])
 if not filtro.empty:
     filtro = filtro[filtro["data"].dt.month == mes_sel]
-    if semana_sel != "Todas":
-        filtro = filtro[filtro["semana"] == int(semana_sel)]
 
 if filtro.empty:
     st.warning("Nenhum dado encontrado para o filtro selecionado.")
@@ -620,7 +588,7 @@ for indicador in INDICADORES:
                 "status": "Aberta",
             }])
         subset["sinaleira"] = subset["status"].apply(status_sinaleira)
-        subset = subset[["sinaleira", "indicador", "descricao", "responsavel", "prazo", "status"]]
+        subset = subset[["sinaleira", "indicador", "descricao", "responsavel", "prazo"]]
         edited_acoes = st.data_editor(
             subset,
             num_rows="dynamic",
@@ -628,18 +596,28 @@ for indicador in INDICADORES:
             use_container_width=True,
             key=f"acoes_{indicador}",
             column_config={
-                "sinaleira": st.column_config.TextColumn("Sinaleira"),
+                "sinaleira": st.column_config.SelectboxColumn(
+                    "Sinaleira",
+                    options=["🔴 Aberta", "🟡 Em andamento", "🟢 Concluída"],
+                    required=True,
+                ),
                 "indicador": st.column_config.SelectboxColumn("Indicador", options=INDICADORES, required=True),
                 "descricao": st.column_config.TextColumn("Descrição"),
                 "responsavel": st.column_config.TextColumn("Responsável"),
                 "prazo": st.column_config.DateColumn("Prazo", format="DD/MM/YYYY"),
-                "status": st.column_config.SelectboxColumn("Status", options=["Aberta", "Em andamento", "Concluída"], required=True),
             },
-            disabled=["sinaleira"],
         )
         if st.button(f"Salvar ações - {indicador}", key=f"salvar_{indicador}"):
             outras = acoes_edit[acoes_edit["indicador"] != indicador]
-            novas = normalize_acoes(edited_acoes)
+            novas = edited_acoes.copy()
+            novas["status"] = (
+                novas["sinaleira"].astype(str)
+                .str.replace("🔴 ", "", regex=False)
+                .str.replace("🟡 ", "", regex=False)
+                .str.replace("🟢 ", "", regex=False)
+            )
+            novas = novas[["indicador", "descricao", "responsavel", "prazo", "status"]]
+            novas = normalize_acoes(novas)
             novas = novas[(novas["descricao"].str.strip() != "") | (novas["responsavel"].str.strip() != "")]
             st.session_state["acoes"] = normalize_acoes(pd.concat([outras, novas], ignore_index=True))
             erro = save_base(st.session_state["dados"], st.session_state["acoes"], st.session_state.get("metas", empty_metas()))

@@ -282,6 +282,14 @@ def month_name(n: int) -> str:
     nomes = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
     return nomes[n - 1]
 
+def month_year_label(value) -> str:
+    """Retorna mês/ano abreviado para exibição simples: Jan/2026."""
+    try:
+        ts = pd.to_datetime(value)
+        return f"{month_name(int(ts.month))}/{int(ts.year)}"
+    except Exception:
+        return str(value)
+
 
 def gauge_status_color(value: float, meta: float, tipo: str) -> str:
     """Cor do marcador do relógio: verde quando atende a meta, vermelho quando não atende."""
@@ -392,12 +400,16 @@ with st.sidebar:
     st.header("Filtros")
     dados_base = normalize_dados(st.session_state["dados"])
     if dados_base.empty:
-        meses_disp = list(range(1, 13))
+        periodos_disp = [pd.Period(date.today(), freq="M")]
     else:
-        meses_disp = sorted(dados_base["data"].dt.month.dropna().unique().astype(int).tolist())
-        if not meses_disp:
-            meses_disp = list(range(1, 13))
-    mes_sel = st.selectbox("Mês", meses_disp, format_func=month_name)
+        periodos_disp = sorted(dados_base["data"].dt.to_period("M").dropna().unique().tolist())
+        if not periodos_disp:
+            periodos_disp = [pd.Period(date.today(), freq="M")]
+    periodo_sel = st.selectbox(
+        "Mês/Ano",
+        periodos_disp,
+        format_func=lambda p: month_year_label(p.to_timestamp() if hasattr(p, "to_timestamp") else p),
+    )
 
     st.divider()
     st.header("Base")
@@ -493,7 +505,7 @@ with st.expander("Lançamento em massa", expanded=False):
         use_container_width=True,
         hide_index=True,
         column_config={
-            "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+            "data": st.column_config.DateColumn("Mês/Ano", format="MM/YYYY"),
             "acidentes_un": st.column_config.NumberColumn("Acidentes", min_value=0, step=1),
             "reclamacoes_un": st.column_config.NumberColumn("Reclamações", min_value=0, step=1),
             "perda_prensas_t": st.column_config.NumberColumn("Perda Prensas t", min_value=0.0, step=0.01),
@@ -517,7 +529,7 @@ with st.expander("Lançamento em massa", expanded=False):
 # Filtro
 filtro = normalize_dados(st.session_state["dados"])
 if not filtro.empty:
-    filtro = filtro[filtro["data"].dt.month == mes_sel]
+    filtro = filtro[filtro["data"].dt.to_period("M") == periodo_sel]
 
 if filtro.empty:
     st.warning("Nenhum dado encontrado para o filtro selecionado.")
@@ -573,7 +585,7 @@ else:
         )
         hist["perda_t"] = hist[["perda_prensas_t", "perda_litografia_t", "perda_montagem_t"]].sum(axis=1)
         hist["eficiencia_pct"] = hist[["eficiencia_prensas_pct", "eficiencia_litografia_pct", "eficiencia_montagem_pct"]].mean(axis=1)
-        hist["mes_rotulo"] = pd.to_datetime(hist["mes_periodo"] + "-01").dt.strftime("%m/%Y")
+        hist["mes_rotulo"] = pd.to_datetime(hist["mes_periodo"] + "-01").apply(month_year_label)
 
         series_config = [
             ("Acidentes", "acidentes_un", "un", meta_acidentes),
@@ -603,11 +615,12 @@ else:
                 fig_hist.update_layout(
                     title=f"Histórico — {titulo}",
                     height=210,
-                    margin=dict(l=5, r=5, t=45, b=5),
+                    margin=dict(l=5, r=5, t=45, b=45),
                     xaxis_title="",
                     yaxis_title=unidade,
                     showlegend=False,
                     yaxis=dict(range=[0, eixo_y_max]),
+                    xaxis=dict(tickangle=45),
                 )
                 st.plotly_chart(fig_hist, use_container_width=True)
     st.subheader("Detalhamento por área")

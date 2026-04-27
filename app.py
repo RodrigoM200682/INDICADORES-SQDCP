@@ -267,30 +267,77 @@ def month_name(n: int) -> str:
     return nomes[n - 1]
 
 
-def gauge(title: str, value: float, unit: str, min_value: float, max_value: float, inverse: bool = False) -> go.Figure:
+def gauge_status_color(value: float, meta: float, tipo: str) -> str:
+    """Retorna a cor principal do relógio conforme a meta cadastrada."""
+    value = float(value or 0)
+    meta = float(meta or 0)
+    if tipo == "menor_melhor":
+        if value <= meta:
+            return "#2ca02c"
+        if (meta > 0 and value <= meta * 1.2) or (meta <= 0 and value <= 1):
+            return "#ffbf00"
+        return "#d62728"
+    if meta <= 0:
+        return "#2ca02c" if value > 0 else "#d62728"
+    if value >= meta:
+        return "#2ca02c"
+    if value >= meta * 0.9:
+        return "#ffbf00"
+    return "#d62728"
+
+
+def gauge(title: str, value: float, unit: str, min_value: float, max_value: float, meta: float, tipo: str) -> go.Figure:
+    """Relógio com faixas visuais calibradas pela meta do indicador."""
+    value = float(value or 0)
+    meta = float(meta or 0)
     if max_value <= min_value:
         max_value = min_value + 1
-    if inverse:
+
+    if tipo == "menor_melhor":
+        limite_verde = max(min_value, min(max_value, meta))
+        limite_amarelo = meta * 1.2 if meta > 0 else min(max_value, 1)
+        limite_amarelo = min(max_value, max(limite_verde, limite_amarelo))
         steps = [
-            {"range": [min_value, max_value * 0.33], "color": "#2ca02c"},
-            {"range": [max_value * 0.33, max_value * 0.66], "color": "#ffbf00"},
-            {"range": [max_value * 0.66, max_value], "color": "#d62728"},
+            {"range": [min_value, limite_verde], "color": "#2ca02c"},
+            {"range": [limite_verde, limite_amarelo], "color": "#ffbf00"},
+            {"range": [limite_amarelo, max_value], "color": "#d62728"},
         ]
     else:
+        limite_vermelho = max(min_value, min(max_value, meta * 0.9))
+        limite_meta = min(max_value, max(limite_vermelho, meta))
         steps = [
-            {"range": [min_value, max_value * 0.6], "color": "#d62728"},
-            {"range": [max_value * 0.6, max_value * 0.85], "color": "#ffbf00"},
-            {"range": [max_value * 0.85, max_value], "color": "#2ca02c"},
+            {"range": [min_value, limite_vermelho], "color": "#d62728"},
+            {"range": [limite_vermelho, limite_meta], "color": "#ffbf00"},
+            {"range": [limite_meta, max_value], "color": "#2ca02c"},
         ]
+
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
-        value=float(value),
+        value=value,
         number={"suffix": f" {unit}"},
         title={"text": title, "font": {"size": 18}},
-        gauge={"axis": {"range": [min_value, max_value]}, "bar": {"color": "#1f77b4"}, "steps": steps},
+        gauge={
+            "axis": {"range": [min_value, max_value]},
+            "bar": {"color": gauge_status_color(value, meta, tipo)},
+            "threshold": {
+                "line": {"color": "#111111", "width": 3},
+                "thickness": 0.75,
+                "value": min(max_value, max(min_value, meta)),
+            },
+            "steps": steps,
+        },
     ))
     fig.update_layout(height=260, margin=dict(l=10, r=10, t=40, b=10))
     return fig
+
+
+def status_sinaleira(status: str) -> str:
+    status = str(status or "").strip().lower()
+    if status in ["concluída", "concluida"]:
+        return "🟢 Concluída"
+    if status == "em andamento":
+        return "🟡 Em andamento"
+    return "🔴 Aberta"
 
 
 def build_template() -> bytes:
@@ -492,19 +539,19 @@ else:
     max_reclamacoes = max(10, float(reclamacoes) * 1.5, meta_reclamacoes * 1.5)
     max_perda = max(5, float(perda) * 1.5, meta_perda * 1.5)
     with c1:
-        st.plotly_chart(gauge("Acidentes", acidentes, "un", 0, max_acidentes, inverse=True), use_container_width=True)
+        st.plotly_chart(gauge("Acidentes", acidentes, "un", 0, max_acidentes, meta_acidentes, "menor_melhor"), use_container_width=True)
         st.caption(f"Meta: {meta_acidentes:g} un")
     with c2:
-        st.plotly_chart(gauge("Reclamações", reclamacoes, "un", 0, max_reclamacoes, inverse=True), use_container_width=True)
+        st.plotly_chart(gauge("Reclamações", reclamacoes, "un", 0, max_reclamacoes, meta_reclamacoes, "menor_melhor"), use_container_width=True)
         st.caption(f"Meta: {meta_reclamacoes:g} un")
     with c3:
-        st.plotly_chart(gauge("Perda", perda, "t", 0, max_perda, inverse=True), use_container_width=True)
+        st.plotly_chart(gauge("Perda", perda, "t", 0, max_perda, meta_perda, "menor_melhor"), use_container_width=True)
         st.caption(f"Meta: {meta_perda:g} t")
     with c4:
-        st.plotly_chart(gauge("Atendimento", atendimento, "%", 0, 100, inverse=False), use_container_width=True)
+        st.plotly_chart(gauge("Atendimento", atendimento, "%", 0, 100, meta_atendimento, "maior_melhor"), use_container_width=True)
         st.caption(f"Meta: {meta_atendimento:g}%")
     with c5:
-        st.plotly_chart(gauge("Eficiência", eficiencia, "%", 0, 100, inverse=False), use_container_width=True)
+        st.plotly_chart(gauge("Eficiência", eficiencia, "%", 0, 100, meta_eficiencia, "maior_melhor"), use_container_width=True)
         st.caption(f"Meta: {meta_eficiencia:g}%")
 
     st.subheader("Detalhamento por área")
@@ -572,6 +619,8 @@ for indicador in INDICADORES:
                 "prazo": pd.NaT,
                 "status": "Aberta",
             }])
+        subset["sinaleira"] = subset["status"].apply(status_sinaleira)
+        subset = subset[["sinaleira", "indicador", "descricao", "responsavel", "prazo", "status"]]
         edited_acoes = st.data_editor(
             subset,
             num_rows="dynamic",
@@ -579,12 +628,14 @@ for indicador in INDICADORES:
             use_container_width=True,
             key=f"acoes_{indicador}",
             column_config={
+                "sinaleira": st.column_config.TextColumn("Sinaleira"),
                 "indicador": st.column_config.SelectboxColumn("Indicador", options=INDICADORES, required=True),
                 "descricao": st.column_config.TextColumn("Descrição"),
                 "responsavel": st.column_config.TextColumn("Responsável"),
                 "prazo": st.column_config.DateColumn("Prazo", format="DD/MM/YYYY"),
                 "status": st.column_config.SelectboxColumn("Status", options=["Aberta", "Em andamento", "Concluída"], required=True),
             },
+            disabled=["sinaleira"],
         )
         if st.button(f"Salvar ações - {indicador}", key=f"salvar_{indicador}"):
             outras = acoes_edit[acoes_edit["indicador"] != indicador]

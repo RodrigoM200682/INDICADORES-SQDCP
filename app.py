@@ -331,6 +331,26 @@ def gauge(title: str, value: float, unit: str, min_value: float, max_value: floa
     return fig
 
 
+
+def auto_y_range(values, meta=None, min_floor: float = 0.0):
+    """Escala automática para evidenciar variações da série histórica."""
+    serie = pd.Series(values).dropna().astype(float)
+    pontos = serie.tolist()
+    if meta is not None and pd.notna(meta):
+        pontos.append(float(meta))
+    if not pontos:
+        return [0, 1]
+    menor = min(pontos)
+    maior = max(pontos)
+    if menor == maior:
+        margem = max(abs(maior) * 0.10, 1.0)
+    else:
+        margem = (maior - menor) * 0.20
+    y_min = max(min_floor, menor - margem)
+    y_max = maior + margem
+    if y_max <= y_min:
+        y_max = y_min + 1
+    return [y_min, y_max]
 def status_sinaleira(status: str) -> str:
     status_original = str(status or "").strip()
     status_norm = status_original.lower()
@@ -610,8 +630,7 @@ else:
                     annotation_text="Meta",
                     annotation_position="top left",
                 )
-                max_y = float(max(hist[campo].max() if not hist[campo].empty else 0, meta_valor, 1))
-                eixo_y_max = 100 if unidade == "%" else max_y * 1.25
+                y_range = auto_y_range(hist[campo], meta_valor, min_floor=0.0)
                 fig_hist.update_layout(
                     title=f"Histórico — {titulo}",
                     height=210,
@@ -619,7 +638,7 @@ else:
                     xaxis_title="",
                     yaxis_title=unidade,
                     showlegend=False,
-                    yaxis=dict(range=[0, eixo_y_max]),
+                    yaxis=dict(range=y_range, fixedrange=False),
                     xaxis=dict(tickangle=45),
                 )
                 st.plotly_chart(fig_hist, use_container_width=True)

@@ -23,6 +23,7 @@ LOCAL_DB_FILE = LOCAL_DATA_DIR / "sqdcp_base.xlsx"
 
 DATA_SHEET = "dados"
 ACTIONS_SHEET = "acoes"
+METAS_SHEET = "metas"
 
 INDICADORES = [
     "Acidentes",
@@ -53,6 +54,21 @@ COLS_ACOES = [
     "prazo",
     "status",
 ]
+
+COLS_METAS = [
+    "indicador",
+    "meta",
+    "unidade",
+    "tipo",
+]
+
+METAS_PADRAO = pd.DataFrame([
+    {"indicador": "Acidentes", "meta": 0.0, "unidade": "un", "tipo": "menor_melhor"},
+    {"indicador": "Reclamações", "meta": 0.0, "unidade": "un", "tipo": "menor_melhor"},
+    {"indicador": "Perda", "meta": 0.0, "unidade": "t", "tipo": "menor_melhor"},
+    {"indicador": "Atendimento no prazo", "meta": 100.0, "unidade": "%", "tipo": "maior_melhor"},
+    {"indicador": "Eficiência", "meta": 100.0, "unidade": "%", "tipo": "maior_melhor"},
+])
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -133,6 +149,10 @@ def empty_acoes() -> pd.DataFrame:
     return pd.DataFrame(columns=COLS_ACOES)
 
 
+def empty_metas() -> pd.DataFrame:
+    return METAS_PADRAO.copy()
+
+
 def normalize_dados(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for col in COLS_DADOS:
@@ -162,26 +182,59 @@ def normalize_acoes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def read_workbook(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def normalize_metas(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return empty_metas()
+    df = df.copy()
+    for col in COLS_METAS:
+        if col not in df.columns:
+            df[col] = ""
+    df = df[COLS_METAS]
+    df["indicador"] = df["indicador"].fillna("").astype(str)
+    df["meta"] = pd.to_numeric(df["meta"], errors="coerce").fillna(0.0)
+    df["unidade"] = df["unidade"].fillna("").astype(str)
+    df["tipo"] = df["tipo"].fillna("").astype(str)
+
+    base = empty_metas()
+    atual = df[df["indicador"].isin(INDICADORES)].copy()
+    if not atual.empty:
+        base = base[~base["indicador"].isin(atual["indicador"])]
+        base = pd.concat([base, atual], ignore_index=True)
+    base = base.drop_duplicates(subset=["indicador"], keep="last")
+    return base[COLS_METAS]
+
+
+def get_meta(metas: pd.DataFrame, indicador: str, default: float = 0.0) -> float:
+    metas = normalize_metas(metas)
+    linha = metas[metas["indicador"] == indicador]
+    if linha.empty:
+        return default
+    return float(linha["meta"].iloc[0])
+
+
+def read_workbook(file_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     bio = BytesIO(file_bytes)
     xls = pd.ExcelFile(bio, engine="openpyxl")
     dados = pd.read_excel(xls, DATA_SHEET) if DATA_SHEET in xls.sheet_names else empty_dados()
     acoes = pd.read_excel(xls, ACTIONS_SHEET) if ACTIONS_SHEET in xls.sheet_names else empty_acoes()
-    return normalize_dados(dados), normalize_acoes(acoes)
+    metas = pd.read_excel(xls, METAS_SHEET) if METAS_SHEET in xls.sheet_names else empty_metas()
+    return normalize_dados(dados), normalize_acoes(acoes), normalize_metas(metas)
 
 
-def to_workbook_bytes(dados: pd.DataFrame, acoes: pd.DataFrame) -> bytes:
+def to_workbook_bytes(dados: pd.DataFrame, acoes: pd.DataFrame, metas: Optional[pd.DataFrame] = None) -> bytes:
     dados = normalize_dados(dados)
     acoes = normalize_acoes(acoes)
+    metas = normalize_metas(metas if metas is not None else empty_metas())
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         dados.to_excel(writer, sheet_name=DATA_SHEET, index=False)
         acoes.to_excel(writer, sheet_name=ACTIONS_SHEET, index=False)
+        metas.to_excel(writer, sheet_name=METAS_SHEET, index=False)
     output.seek(0)
     return output.getvalue()
 
 
-def load_base() -> Tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+def load_base() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
     avisos = []
     file_bytes, _, warn = read_github_file()
     if warn:
@@ -189,20 +242,21 @@ def load_base() -> Tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     if file_bytes:
         try:
             LOCAL_DB_FILE.write_bytes(file_bytes)
-            dados, acoes = read_workbook(file_bytes)
-            return dados, acoes, avisos
+            dados, acoes, metas = read_workbook(file_bytes)
+            return dados, acoes, metas, avisos
         except Exception as exc:
             avisos.append(f"A base no GitHub existe, mas não pôde ser lida: {exc}")
     if LOCAL_DB_FILE.exists():
         try:
-            return (*read_workbook(LOCAL_DB_FILE.read_bytes()), avisos)
+            dados, acoes, metas = read_workbook(LOCAL_DB_FILE.read_bytes())
+            return dados, acoes, metas, avisos
         except Exception as exc:
             avisos.append(f"A base local não pôde ser lida: {exc}")
-    return empty_dados(), empty_acoes(), avisos
+    return empty_dados(), empty_acoes(), empty_metas(), avisos
 
 
-def save_base(dados: pd.DataFrame, acoes: pd.DataFrame) -> Optional[str]:
-    file_bytes = to_workbook_bytes(dados, acoes)
+def save_base(dados: pd.DataFrame, acoes: pd.DataFrame, metas: Optional[pd.DataFrame] = None) -> Optional[str]:
+    file_bytes = to_workbook_bytes(dados, acoes, metas)
     LOCAL_DB_FILE.parent.mkdir(exist_ok=True)
     LOCAL_DB_FILE.write_bytes(file_bytes)
     return write_github_file(file_bytes)
@@ -254,7 +308,8 @@ def build_template() -> bytes:
         "eficiencia_montagem_pct": 0.0,
     }])
     modelo_acoes = pd.DataFrame(columns=COLS_ACOES)
-    return to_workbook_bytes(modelo_dados, modelo_acoes)
+    modelo_metas = empty_metas()
+    return to_workbook_bytes(modelo_dados, modelo_acoes, modelo_metas)
 
 
 # =====================================================
@@ -264,9 +319,10 @@ st.title("📊 FMDS SQDCP - Painel Industrial")
 st.caption("Visualização simples, lançamento em massa e base persistente via GitHub.")
 
 if "loaded" not in st.session_state:
-    dados, acoes, avisos = load_base()
+    dados, acoes, metas, avisos = load_base()
     st.session_state["dados"] = dados
     st.session_state["acoes"] = acoes
+    st.session_state["metas"] = metas
     st.session_state["avisos"] = avisos
     st.session_state["loaded"] = True
 
@@ -301,7 +357,7 @@ with st.sidebar:
     )
     st.download_button(
         "Baixar base atual",
-        data=to_workbook_bytes(st.session_state["dados"], st.session_state["acoes"]),
+        data=to_workbook_bytes(st.session_state["dados"], st.session_state["acoes"], st.session_state.get("metas", empty_metas())),
         file_name="base_sqdcp_fmds.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
@@ -309,11 +365,12 @@ with st.sidebar:
     upload = st.file_uploader("Importar Excel .xlsx", type=["xlsx"])
     if upload is not None:
         try:
-            imp_dados, imp_acoes = read_workbook(upload.getvalue())
+            imp_dados, imp_acoes, imp_metas = read_workbook(upload.getvalue())
             st.session_state["dados"] = imp_dados
             if not imp_acoes.empty:
                 st.session_state["acoes"] = imp_acoes
-            erro = save_base(st.session_state["dados"], st.session_state["acoes"])
+            st.session_state["metas"] = imp_metas
+            erro = save_base(st.session_state["dados"], st.session_state["acoes"], st.session_state.get("metas", empty_metas()))
             if erro:
                 st.warning(erro)
             else:
@@ -327,11 +384,39 @@ with st.sidebar:
     if st.button("Excluir base de dados", disabled=not confirmar, type="secondary"):
         st.session_state["dados"] = empty_dados()
         st.session_state["acoes"] = empty_acoes()
-        erro = save_base(st.session_state["dados"], st.session_state["acoes"])
+        st.session_state["metas"] = empty_metas()
+        erro = save_base(st.session_state["dados"], st.session_state["acoes"], st.session_state.get("metas", empty_metas()))
         if erro:
             st.warning(erro)
         else:
             st.success("Base excluída e sincronizada.")
+        st.rerun()
+
+# Metas dos indicadores
+with st.expander("Metas dos indicadores", expanded=False):
+    st.caption("Defina a referência dos relógios. Para acidentes, reclamações e perdas, quanto menor melhor. Para atendimento no prazo e eficiência, quanto maior melhor.")
+    metas_edit = normalize_metas(st.session_state.get("metas", empty_metas()))
+    edited_metas = st.data_editor(
+        metas_edit,
+        num_rows="fixed",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "indicador": st.column_config.SelectboxColumn("Indicador", options=INDICADORES, required=True),
+            "meta": st.column_config.NumberColumn("Meta", min_value=0.0, step=0.1),
+            "unidade": st.column_config.TextColumn("Unidade"),
+            "tipo": st.column_config.SelectboxColumn("Critério", options=["menor_melhor", "maior_melhor"], required=True),
+        },
+        disabled=["indicador", "unidade", "tipo"],
+        key="metas_editor",
+    )
+    if st.button("Salvar metas", type="primary"):
+        st.session_state["metas"] = normalize_metas(edited_metas)
+        erro = save_base(st.session_state["dados"], st.session_state["acoes"], st.session_state["metas"])
+        if erro:
+            st.warning(erro)
+        else:
+            st.success("Metas salvas e sincronizadas no GitHub.")
         st.rerun()
 
 # Lançamento em massa
@@ -372,7 +457,7 @@ with st.expander("Lançamento em massa", expanded=False):
     )
     if st.button("Salvar lançamentos", type="primary"):
         st.session_state["dados"] = normalize_dados(edited)
-        erro = save_base(st.session_state["dados"], st.session_state["acoes"])
+        erro = save_base(st.session_state["dados"], st.session_state["acoes"], st.session_state.get("metas", empty_metas()))
         if erro:
             st.warning(erro)
         else:
@@ -389,26 +474,38 @@ if not filtro.empty:
 if filtro.empty:
     st.warning("Nenhum dado encontrado para o filtro selecionado.")
 else:
+    metas = normalize_metas(st.session_state.get("metas", empty_metas()))
     acidentes = filtro["acidentes_un"].sum()
     reclamacoes = filtro["reclamacoes_un"].sum()
     perda = filtro[["perda_prensas_t", "perda_litografia_t", "perda_montagem_t"]].sum().sum()
     atendimento = filtro["atendimento_prazo_pct"].mean()
     eficiencia = filtro[["eficiencia_prensas_pct", "eficiencia_litografia_pct", "eficiencia_montagem_pct"]].mean(axis=1).mean()
 
+    meta_acidentes = get_meta(metas, "Acidentes", 0.0)
+    meta_reclamacoes = get_meta(metas, "Reclamações", 0.0)
+    meta_perda = get_meta(metas, "Perda", 0.0)
+    meta_atendimento = get_meta(metas, "Atendimento no prazo", 100.0)
+    meta_eficiencia = get_meta(metas, "Eficiência", 100.0)
+
     c1, c2, c3, c4, c5 = st.columns(5)
-    max_acidentes = max(5, float(acidentes) * 1.5)
-    max_reclamacoes = max(10, float(reclamacoes) * 1.5)
-    max_perda = max(5, float(perda) * 1.5)
+    max_acidentes = max(5, float(acidentes) * 1.5, meta_acidentes * 1.5)
+    max_reclamacoes = max(10, float(reclamacoes) * 1.5, meta_reclamacoes * 1.5)
+    max_perda = max(5, float(perda) * 1.5, meta_perda * 1.5)
     with c1:
         st.plotly_chart(gauge("Acidentes", acidentes, "un", 0, max_acidentes, inverse=True), use_container_width=True)
+        st.caption(f"Meta: {meta_acidentes:g} un")
     with c2:
         st.plotly_chart(gauge("Reclamações", reclamacoes, "un", 0, max_reclamacoes, inverse=True), use_container_width=True)
+        st.caption(f"Meta: {meta_reclamacoes:g} un")
     with c3:
         st.plotly_chart(gauge("Perda", perda, "t", 0, max_perda, inverse=True), use_container_width=True)
+        st.caption(f"Meta: {meta_perda:g} t")
     with c4:
         st.plotly_chart(gauge("Atendimento", atendimento, "%", 0, 100, inverse=False), use_container_width=True)
+        st.caption(f"Meta: {meta_atendimento:g}%")
     with c5:
         st.plotly_chart(gauge("Eficiência", eficiencia, "%", 0, 100, inverse=False), use_container_width=True)
+        st.caption(f"Meta: {meta_eficiencia:g}%")
 
     st.subheader("Detalhamento por área")
     d1, d2 = st.columns(2)
@@ -421,7 +518,21 @@ else:
                 filtro["perda_montagem_t"].sum(),
             ],
         })
-        st.bar_chart(perdas_area.set_index("Área"))
+        fig_perdas = go.Figure(go.Bar(
+            x=perdas_area["Área"],
+            y=perdas_area["Perda t"],
+            text=perdas_area["Perda t"].round(2),
+            textposition="outside",
+        ))
+        fig_perdas.update_layout(
+            title="Perdas por área — toneladas",
+            xaxis_title="Área",
+            yaxis_title="Perda (t)",
+            yaxis=dict(range=[0, max(0.01, float(perdas_area["Perda t"].max()) * 1.25)]),
+            height=360,
+            margin=dict(l=10, r=10, t=60, b=10),
+        )
+        st.plotly_chart(fig_perdas, use_container_width=True)
     with d2:
         efic_area = pd.DataFrame({
             "Área": ["Prensas", "Litografia", "Montagem"],
@@ -430,8 +541,22 @@ else:
                 filtro["eficiencia_litografia_pct"].mean(),
                 filtro["eficiencia_montagem_pct"].mean(),
             ],
-        })
-        st.bar_chart(efic_area.set_index("Área"))
+        }).fillna(0)
+        fig_efic = go.Figure(go.Bar(
+            x=efic_area["Área"],
+            y=efic_area["Eficiência %"],
+            text=efic_area["Eficiência %"].round(1).astype(str) + "%",
+            textposition="outside",
+        ))
+        fig_efic.update_layout(
+            title="Eficiência por área — percentual",
+            xaxis_title="Área",
+            yaxis_title="Eficiência (%)",
+            yaxis=dict(range=[0, 100]),
+            height=360,
+            margin=dict(l=10, r=10, t=60, b=10),
+        )
+        st.plotly_chart(fig_efic, use_container_width=True)
 
 st.divider()
 st.subheader("Ações por indicador")
@@ -466,7 +591,7 @@ for indicador in INDICADORES:
             novas = normalize_acoes(edited_acoes)
             novas = novas[(novas["descricao"].str.strip() != "") | (novas["responsavel"].str.strip() != "")]
             st.session_state["acoes"] = normalize_acoes(pd.concat([outras, novas], ignore_index=True))
-            erro = save_base(st.session_state["dados"], st.session_state["acoes"])
+            erro = save_base(st.session_state["dados"], st.session_state["acoes"], st.session_state.get("metas", empty_metas()))
             if erro:
                 st.warning(erro)
             else:

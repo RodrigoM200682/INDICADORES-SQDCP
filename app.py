@@ -14,6 +14,23 @@ import streamlit as st
 
 st.set_page_config(page_title="FMDS SQDCP", page_icon="📊", layout="wide")
 
+st.markdown("""
+<style>
+.stApp {
+    background-color: #80EF80;
+}
+.block-container {
+    background: rgba(255, 255, 255, 0.88);
+    border-radius: 18px;
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+}
+section[data-testid="stSidebar"] > div {
+    background-color: #EFFFF0;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # =====================================================
 # Configuração de persistência
 # =====================================================
@@ -177,7 +194,7 @@ def normalize_acoes(df: pd.DataFrame) -> pd.DataFrame:
     df["descricao"] = df["descricao"].fillna("").astype(str)
     df["responsavel"] = df["responsavel"].fillna("").astype(str)
     df["prazo"] = pd.to_datetime(df["prazo"], errors="coerce", dayfirst=True)
-    df["status"] = df["status"].fillna("Aberta").astype(str)
+    df["status"] = df["status"].fillna("").astype(str)
     return df
 
 
@@ -307,13 +324,29 @@ def gauge(title: str, value: float, unit: str, min_value: float, max_value: floa
 
 
 def status_sinaleira(status: str) -> str:
-    status = str(status or "").strip().lower()
-    if status in ["concluída", "concluida"]:
+    status_original = str(status or "").strip()
+    status_norm = status_original.lower()
+    if status_norm in ["", "null", "sem ação", "sem acao", "nenhuma"]:
+        return ""
+    if status_norm in ["concluída", "concluida"]:
         return "🟢 Concluída"
-    if status == "em andamento":
+    if status_norm == "em andamento":
         return "🟡 Em andamento"
-    return "🔴 Aberta"
+    if status_norm == "aberta":
+        return "🔴 Aberta"
+    return status_original
 
+
+def sinaleira_to_status(sinaleira: str) -> str:
+    valor = str(sinaleira or "").strip()
+    if valor in ["", "null", "Sem ação", "Sem acao"]:
+        return ""
+    return (
+        valor.replace("🔴 ", "", 1)
+        .replace("🟡 ", "", 1)
+        .replace("🟢 ", "", 1)
+        .strip()
+    )
 
 def build_template() -> bytes:
     modelo_dados = pd.DataFrame([{
@@ -575,20 +608,20 @@ else:
 
 st.divider()
 st.subheader("Ações por indicador")
+st.caption("Em cada aba, a ação é gravada automaticamente no indicador correspondente. Use a sinaleira em branco quando não houver ação aberta.")
 acoes_edit = normalize_acoes(st.session_state["acoes"])
 for indicador in INDICADORES:
     with st.expander(f"Ações - {indicador}", expanded=True):
         subset = acoes_edit[acoes_edit["indicador"] == indicador].copy()
         if subset.empty:
             subset = pd.DataFrame([{
-                "indicador": indicador,
                 "descricao": "",
                 "responsavel": "",
                 "prazo": pd.NaT,
-                "status": "Aberta",
+                "status": "",
             }])
         subset["sinaleira"] = subset["status"].apply(status_sinaleira)
-        subset = subset[["sinaleira", "indicador", "descricao", "responsavel", "prazo"]]
+        subset = subset[["sinaleira", "descricao", "responsavel", "prazo"]]
         edited_acoes = st.data_editor(
             subset,
             num_rows="dynamic",
@@ -598,10 +631,10 @@ for indicador in INDICADORES:
             column_config={
                 "sinaleira": st.column_config.SelectboxColumn(
                     "Sinaleira",
-                    options=["🔴 Aberta", "🟡 Em andamento", "🟢 Concluída"],
-                    required=True,
+                    options=["", "🔴 Aberta", "🟡 Em andamento", "🟢 Concluída"],
+                    help="Deixe em branco quando não houver ação aberta.",
+                    required=False,
                 ),
-                "indicador": st.column_config.SelectboxColumn("Indicador", options=INDICADORES, required=True),
                 "descricao": st.column_config.TextColumn("Descrição"),
                 "responsavel": st.column_config.TextColumn("Responsável"),
                 "prazo": st.column_config.DateColumn("Prazo", format="DD/MM/YYYY"),
@@ -610,15 +643,11 @@ for indicador in INDICADORES:
         if st.button(f"Salvar ações - {indicador}", key=f"salvar_{indicador}"):
             outras = acoes_edit[acoes_edit["indicador"] != indicador]
             novas = edited_acoes.copy()
-            novas["status"] = (
-                novas["sinaleira"].astype(str)
-                .str.replace("🔴 ", "", regex=False)
-                .str.replace("🟡 ", "", regex=False)
-                .str.replace("🟢 ", "", regex=False)
-            )
+            novas["indicador"] = indicador
+            novas["status"] = novas["sinaleira"].apply(sinaleira_to_status)
             novas = novas[["indicador", "descricao", "responsavel", "prazo", "status"]]
             novas = normalize_acoes(novas)
-            novas = novas[(novas["descricao"].str.strip() != "") | (novas["responsavel"].str.strip() != "")]
+            novas = novas[(novas["descricao"].str.strip() != "") | (novas["responsavel"].str.strip() != "") | (novas["status"].str.strip() != "")]
             st.session_state["acoes"] = normalize_acoes(pd.concat([outras, novas], ignore_index=True))
             erro = save_base(st.session_state["dados"], st.session_state["acoes"], st.session_state.get("metas", empty_metas()))
             if erro:

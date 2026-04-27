@@ -555,6 +555,61 @@ else:
         st.plotly_chart(gauge("Eficiência", eficiencia, "%", 0, 100, meta_eficiencia, "maior_melhor"), use_container_width=True)
         st.caption(f"Meta: {meta_eficiencia:g}%")
 
+
+    st.markdown("### Série histórica dos indicadores")
+    historico = normalize_dados(st.session_state["dados"]).copy()
+    if not historico.empty:
+        historico["mes_periodo"] = historico["data"].dt.to_period("M").astype(str)
+        hist = historico.groupby("mes_periodo", as_index=False).agg(
+            acidentes_un=("acidentes_un", "sum"),
+            reclamacoes_un=("reclamacoes_un", "sum"),
+            perda_prensas_t=("perda_prensas_t", "sum"),
+            perda_litografia_t=("perda_litografia_t", "sum"),
+            perda_montagem_t=("perda_montagem_t", "sum"),
+            atendimento_prazo_pct=("atendimento_prazo_pct", "mean"),
+            eficiencia_prensas_pct=("eficiencia_prensas_pct", "mean"),
+            eficiencia_litografia_pct=("eficiencia_litografia_pct", "mean"),
+            eficiencia_montagem_pct=("eficiencia_montagem_pct", "mean"),
+        )
+        hist["perda_t"] = hist[["perda_prensas_t", "perda_litografia_t", "perda_montagem_t"]].sum(axis=1)
+        hist["eficiencia_pct"] = hist[["eficiencia_prensas_pct", "eficiencia_litografia_pct", "eficiencia_montagem_pct"]].mean(axis=1)
+        hist["mes_rotulo"] = pd.to_datetime(hist["mes_periodo"] + "-01").dt.strftime("%m/%Y")
+
+        series_config = [
+            ("Acidentes", "acidentes_un", "un", meta_acidentes),
+            ("Reclamações", "reclamacoes_un", "un", meta_reclamacoes),
+            ("Perda", "perda_t", "t", meta_perda),
+            ("Atendimento", "atendimento_prazo_pct", "%", meta_atendimento),
+            ("Eficiência", "eficiencia_pct", "%", meta_eficiencia),
+        ]
+        hcols = st.columns(5)
+        for col, (titulo, campo, unidade, meta_valor) in zip(hcols, series_config):
+            with col:
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Scatter(
+                    x=hist["mes_rotulo"],
+                    y=hist[campo],
+                    mode="lines+markers",
+                    name=titulo,
+                ))
+                fig_hist.add_hline(
+                    y=meta_valor,
+                    line_dash="dash",
+                    annotation_text="Meta",
+                    annotation_position="top left",
+                )
+                max_y = float(max(hist[campo].max() if not hist[campo].empty else 0, meta_valor, 1))
+                eixo_y_max = 100 if unidade == "%" else max_y * 1.25
+                fig_hist.update_layout(
+                    title=f"Histórico — {titulo}",
+                    height=210,
+                    margin=dict(l=5, r=5, t=45, b=5),
+                    xaxis_title="",
+                    yaxis_title=unidade,
+                    showlegend=False,
+                    yaxis=dict(range=[0, eixo_y_max]),
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
     st.subheader("Detalhamento por área")
     d1, d2 = st.columns(2)
     with d1:
